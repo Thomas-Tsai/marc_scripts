@@ -1,89 +1,110 @@
-#!/usr/bin/perl -s
-############################################################################
-#                          new_split.pl  -  description                    #
-#                             -------------------                          #
-#    copyright            : (C) 2000 by Yu-Chin Tsai                       #
-#    email                : tlinux.tsai@gmail.com                          #
-############################################################################
-############################################################################
-#                                                                          #
-#   This program is free software; you can redistribute it and#or modify   #
-#   it under the terms of the GNU General Public License as published by   #
-#   the Free Software Foundation; either version 2 of the License, or      #
-#   (at your option) any later version.                                    #
-#                                                                          #
-#############################################################################
-
+#!/bin/perl -w
+use strict;
+use Getopt::Std;
+use MARC::File::USMARC;
 use Encode;
-use Encode::HanExtra;
-use Unicode::String qw(utf8);
 
-if ($#ARGV != 2){
-    print "$#ARGV Usage:\n\t$0 file_name orig_encode start-end\n\tEX:$0 xxx.mrc big5 1-1000\n";
-    exit;
+sub do_help {
+  print "Usage: $0 [options]\n";
+  print <<EOF;
+Options:
+    -i	FILE	input file.
+    -o  FILE    output file.
+    -f  ENCODE  Convert characters from encoding.
+    -d          Debug mode.
+    -h          Print this summary.
+EOF
+  exit;
 }
 
-my $file_name = $ARGV[0];
-my $orig_encode = $ARGV[1];
-my ($marc_start,$marc_end) = split(/-/, $ARGV[2]);
-my $marc_number=1;
+my ($INFILE, $OUTFILE, $DEBUG, $encode);
+# declare the perl command line flags/options we want to allow
 
-open F, "< $file_name" or die "Can't open $file_name : $!";
-while (my $file=<F>) {
-    @marc_record = split(/\x1D/,$file); ## @marc_record 為每一筆記錄
+my (%options, $switch);
+getopts("hdi:o:f:", \%options);
+
+foreach $switch(sort keys %options){
+
+  print "$switch = $options{$switch}\n" if $options{d};
+
 }
 
-foreach my $marc_record (@marc_record) {
-    if (($marc_number >= $marc_start) && ($marc_number <= $marc_end)){
-	my ($marc, $ret) = cmarc($marc_record);
-	print "$marc";
-	warn "$ret";
+if ($options{d})
+{  
+  $DEBUG = 1;
+}
+
+if ($options{h})
+{
+  do_help();
+}
+
+if ($options{i})
+{
+  $INFILE = "$options{i}";
+} else {
+  do_help();
+}
+
+if ($options{o})
+{
+  $OUTFILE = "$options{o}";
+} else {
+  do_help();
+}
+
+if ($options{f})
+{  
+  $encode = "$options{f}";
+} else {
+  do_help();
+}
+
+
+
+# If you have weird control fields...
+use MARC::Field;
+MARC::Field->allow_controlfield_tags('FMT', 'LDX');    
+
+# file input with GBK ISO2709 format
+my $file = MARC::File::USMARC->in( $INFILE );
+
+# file output to new iso2709 format with utf8 charset
+open(OUT,">$OUTFILE") or die $!;
+
+while ( my $record = $file->next() ) {
+    my @fields = $record->fields();
+    my $leader = $record->leader();
+
+    my $newrecord = MARC::Record->new();
+    print $leader, "\n" if $DEBUG;
+    $newrecord->leader($leader);
+
+    foreach my $field (@fields) {
+	if ($field->tag() < 10){
+		MARC::Field->is_controlfield_tag($field->tag());
+                my $new_data = encode("utf-8", decode("$encode",$field->data()));
+		my $new_field = MARC::Field->new($field->tag(), $new_data);
+		print $field->tag(), "     ", $new_data, "\n" if $DEBUG;
+		$newrecord->add_fields($new_field);
+	} else {
+		my @subfields = $field->subfields();
+		my @newSubfields = ();
+		while ( my $subfield = pop( @subfields ) ) {
+			my ($code,$data) = @$subfield;
+			$data = encode("utf-8", decode("$encode", $data));
+			unshift( @newSubfields, $code, $data );
+		}
+
+		my $new_field = MARC::Field->new($field->tag(), $field->indicator(1), $field->indicator(2), @newSubfields);
+		print $field->tag(), " ", $field->indicator(1)," ", $field->indicator(2), " ", $new_field->as_string(), "\n" if $DEBUG;
+		$newrecord->append_fields($new_field);
+	}
+
     }
-    $marc_number++;
+    print OUT $newrecord->as_usmarc();
 }
-
-sub cmarc {
-        my $reco = shift;
-        my $len = substr ( $reco,13,4);
-        my $l1= substr ($reco,25,($len-25));
-        my $pos = 24;
-        my $base=$len;
-        my $newpos;
-        my $newmarc='';
-        my $newtag='';
-        my $ret='';
-        for ( my $k=0; $k<=(length ($l1)/12)-1 ; $k ++) { 
-                my $mar= substr ( $reco,$pos,12);
-                $pos = $pos+12;
-                my $tag = substr ($mar,0,3);
-                if ($tag eq '200' and $ret eq '') {$ret ='UNIMARC';}
-                else {
-                        if ( $tag eq '245'and $ret eq '') { $ret='MARC21';}
-                }
-
-                my $length =substr ($mar,3,4);
-                my $position = substr($mar,7,5);
-#my $marc = utf8(substr ( $reco,$base,$length));
-		my $marc = encode("utf8", decode($orig_encode,substr ( $reco,$base,$length)));
-                $newtag=$newtag.$tag.newval(4,length ($marc)).newval(5,$newpos);
-                $newmarc=$newmarc.$marc;
-                $newpos = $newpos+newval(4,length ($marc));
-                $base= $base+$length;
-        }
-$newtag=$newtag.substr ($reco,$len-1,1);
-        my $tag= newval(5,(24+length($newtag)+length ($newmarc))).substr($reco,5,7).newval(5,(24+length($newtag))).substr($reco,17,7).$newtag.$newmarc."\x1D";
-        return $tag,$ret;
-}
-
-sub newval {
-        my ($count,$i) = @_;
-        my $newval='';
-        my $l = $count - length ($i);
-        for (my $i=0; $i< $l; $i ++) {
-                $newval=$newval."0";
-        }
-        return $newval.$i;
-
-}
-
+$file->close();
+undef $file;
+close(OUT);
 
